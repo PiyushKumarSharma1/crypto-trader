@@ -15,6 +15,8 @@ curl -X POST http://127.0.0.1:8765/cycles/run
 curl http://127.0.0.1:8765/decisions
 ```
 
+Open `http://127.0.0.1:8765/wallet` in the browser profile containing MetaMask and click **Connect MetaMask**. MetaMask must receive the request from that explicit click; Nova records only the selected public EVM address and chain ID. The wallet gateway contains no signing, approval, or transaction method.
+
 The scheduler runs immediately and then every 15 minutes for a bounded 96-cycle (24-hour) deployment. Each cycle atomically updates `runtime/progress.json`; a supervisor may launch the next bounded run after inspection. SQLite uses WAL mode at `runtime/nova.db`. Obsidian-compatible notes are atomically written under `runtime/vault/Decisions` with a SHA-256 digest of the input bars.
 
 ## MCP

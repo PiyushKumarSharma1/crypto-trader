@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS cycles (
   id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, provider TEXT NOT NULL,
   bars INTEGER NOT NULL, latency_ms INTEGER NOT NULL, outcome TEXT NOT NULL, detail TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wallet_connections (
+  id INTEGER PRIMARY KEY CHECK (id = 1), address TEXT NOT NULL,
+  chain_id TEXT NOT NULL, connected_at TEXT NOT NULL
+);
 """
 
 
@@ -63,3 +67,21 @@ class Store:
             count = db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
         return {"ok": bool(cycle and cycle["outcome"] == "ok"), "latest_cycle": dict(cycle) if cycle else None, "decision_count": count}
 
+    def connect_wallet(self, address: str, chain_id: str, connected_at: str) -> dict:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO wallet_connections(id,address,chain_id,connected_at) VALUES(1,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET address=excluded.address,chain_id=excluded.chain_id,connected_at=excluded.connected_at",
+                (address, chain_id, connected_at),
+            )
+        return {"connected": True, "address": address, "chain_id": chain_id, "connected_at": connected_at}
+
+    def wallet(self) -> dict:
+        with self.connect() as db:
+            row = db.execute("SELECT address,chain_id,connected_at FROM wallet_connections WHERE id=1").fetchone()
+        return {"connected": False} if row is None else {"connected": True, **dict(row)}
+
+    def disconnect_wallet(self) -> dict:
+        with self.connect() as db:
+            db.execute("DELETE FROM wallet_connections WHERE id=1")
+        return {"connected": False}

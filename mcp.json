@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nova-market-memory": {
+      "command": "/Users/piyushkumarsharma/Documents/Codex/2026-08-16/u/crypto_trading_agent/.venv/bin/python",
+      "args": ["-m", "nova.mcp_server"],
+      "cwd": "/Users/piyushkumarsharma/Documents/Codex/2026-08-16/u/crypto_trading_agent"
+    }
+  }
+}

@@ -48,7 +48,7 @@ class Store:
         p = decision.to_dict()
         with self.connect() as db:
             db.execute(
-                "INSERT OR REPLACE INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (*[p[k] for k in ("decision_id", "timestamp", "symbol", "action", "confidence", "reference_price", "notional_usd", "stop_price", "take_profit_price", "strategy_version", "rationale", "data_sha256", "status")], json.dumps(p, sort_keys=True)),
             )
 

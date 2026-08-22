@@ -10,7 +10,7 @@ import uuid
 import re
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, field_validator
 
@@ -43,6 +43,16 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="Nova Market Control", version="0.1.0", lifespan=lifespan)
+_cycle_lock = asyncio.Lock()
+
+
+@app.middleware("http")
+async def local_only_state_api(request: Request, call_next):
+    """Keep wallet metadata and cycle triggering on the local control plane."""
+    if request.method != "GET" and request.url.path in {"/api/wallet/connect", "/api/wallet/disconnect", "/cycles/run"}:
+        if request.client is None or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
+            return HTMLResponse("local control endpoint", status_code=403)
+    return await call_next(request)
 
 
 class WalletConnection(BaseModel):
@@ -59,14 +69,17 @@ class WalletConnection(BaseModel):
     @field_validator("chain_id")
     @classmethod
     def valid_chain(cls, value: str) -> str:
-        if not re.fullmatch(r"0x[0-9a-fA-F]+", value):
+        if not re.fullmatch(r"0x[1-9a-fA-F][0-9a-fA-F]*", value):
             raise ValueError("invalid hexadecimal chain id")
-        return value.lower()
+        canonical = f"0x{int(value, 16):x}"
+        if value.lower() != canonical:
+            raise ValueError("chain id must be canonical lowercase hexadecimal")
+        return canonical
 
 
 WALLET_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'">
 <title>Nova · MetaMask</title><style>
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b12;color:#eef2ff}
 .card{width:min(560px,calc(100vw - 48px));padding:34px;border:1px solid #29344c;border-radius:24px;background:linear-gradient(145deg,#131a28,#0b101a);box-shadow:0 30px 90px #000a}
@@ -77,20 +90,28 @@ button{border:0;border-radius:12px;padding:13px 18px;font-weight:750;cursor:poin
 <div id="status" class="status">Ready for your approval.</div><button id="connect">Connect MetaMask</button><button id="disconnect" class="secondary">Disconnect locally</button>
 <div class="note">The connection records only your public address and chain ID. Nova does not request a recovery phrase, private key, message signature, token approval, or transaction.</div></main>
 <script>
-let provider=null; const status=document.querySelector('#status'), connect=document.querySelector('#connect');
+let provider=null, bound=false; const status=document.querySelector('#status'), connect=document.querySelector('#connect');
 function show(message,kind=''){status.className='status '+kind;status.textContent=message}
-window.addEventListener('eip6963:announceProvider',event=>{const d=event.detail;if(!provider&&(d.info?.rdns==='io.metamask'||d.provider?.isMetaMask))provider=d.provider});
+async function disconnectLocal(){const r=await fetch('/api/wallet/disconnect',{method:'POST'});if(!r.ok)throw new Error('Nova could not clear local wallet metadata');show('Disconnected from Nova locally.')}
+async function refresh(){const r=await fetch('/api/wallet');if(!r.ok)return;const d=await r.json();if(d.connected)show(`Observed browser metadata: ${d.address} on chain ${d.chain_id}`,'ok')}
+function bind(){if(!provider||bound)return;bound=true;provider.on?.('accountsChanged',a=>a.length?provider.request({method:'eth_chainId'}).then(c=>sync(a[0],c)).catch(e=>show(e.message,'error')):disconnectLocal().catch(e=>show(e.message,'error')));provider.on?.('chainChanged',c=>provider.request({method:'eth_accounts'}).then(a=>a.length&&sync(a[0],c)).catch(e=>show(e.message,'error')))}
+function selectProvider(candidate){if(!provider){provider=candidate;bind()}}
+window.addEventListener('eip6963:announceProvider',event=>{const d=event.detail;if(d.info?.rdns==='io.metamask'||d.provider?.isMetaMask)selectProvider(d.provider)});
 window.dispatchEvent(new Event('eip6963:requestProvider'));
-setTimeout(()=>{if(!provider&&window.ethereum?.isMetaMask)provider=window.ethereum;if(!provider)show('MetaMask extension was not detected. Install or enable it, then reload.','error')},400);
+setTimeout(()=>{if(!provider&&window.ethereum?.isMetaMask)selectProvider(window.ethereum);if(!provider)show('MetaMask extension was not detected. Install or enable it, then reload.','error')},400);
 async function sync(address,chainId){const r=await fetch('/api/wallet/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({address,chain_id:chainId})});if(!r.ok)throw new Error('Nova rejected wallet metadata');const data=await r.json();show(`Connected ${data.address} on chain ${data.chain_id}`,'ok')}
 connect.addEventListener('click',async()=>{connect.disabled=true;try{if(!provider)throw new Error('MetaMask extension not detected');const accounts=await provider.request({method:'eth_requestAccounts'});const chainId=await provider.request({method:'eth_chainId'});if(!accounts.length)throw new Error('No account selected');await sync(accounts[0],chainId)}catch(e){show(e?.code===4001?'Connection request rejected in MetaMask.':(e.message||String(e)),'error')}finally{connect.disabled=false}});
-document.querySelector('#disconnect').addEventListener('click',async()=>{await fetch('/api/wallet/disconnect',{method:'POST'});show('Disconnected from Nova locally.')});
-function bind(){if(!provider)return;provider.on?.('accountsChanged',a=>a.length?provider.request({method:'eth_chainId'}).then(c=>sync(a[0],c)):show('MetaMask account access removed.'));provider.on?.('chainChanged',c=>provider.request({method:'eth_accounts'}).then(a=>a.length&&sync(a[0],c)))}
-setTimeout(bind,500);
+document.querySelector('#disconnect').addEventListener('click',()=>disconnectLocal().catch(e=>show(e.message,'error')));
+refresh();
 </script></body></html>"""
 
 
 async def run_cycle() -> dict:
+    async with _cycle_lock:
+        return await _run_cycle()
+
+
+async def _run_cycle() -> dict:
     started = utc_now()
     before = time.monotonic()
     try:
@@ -178,4 +199,6 @@ def wallet_disconnect() -> dict:
 
 @app.post("/cycles/run")
 async def trigger_cycle() -> dict:
+    if _cycle_lock.locked():
+        raise HTTPException(status_code=409, detail="cycle already running")
     return await run_cycle()

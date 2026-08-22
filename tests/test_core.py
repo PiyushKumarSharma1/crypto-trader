@@ -3,6 +3,7 @@ from nova.models import Bar
 from nova.risk import RiskManager
 from nova.strategy import EnsembleStrategy
 from nova.service import WalletConnection
+import pytest
 
 
 def bars(n=120):
@@ -29,3 +30,9 @@ def test_wallet_metadata_validation():
     wallet = WalletConnection(address="0x" + "AB" * 20, chain_id="0x1")
     assert wallet.address == "0x" + "ab" * 20
     assert wallet.chain_id == "0x1"
+
+
+@pytest.mark.parametrize("chain_id", ["0x01", "0x0", "1", "0xzz"])
+def test_wallet_rejects_noncanonical_chain_ids(chain_id):
+    with pytest.raises(ValueError):
+        WalletConnection(address="0x" + "ab" * 20, chain_id=chain_id)
